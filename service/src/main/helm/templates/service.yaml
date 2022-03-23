@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "product.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "product.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: {{ .Values.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "product.selectorLabels" . | nindent 4 }}
+

@@ -1,0 +1,367 @@
+pipeline{
+    agent any
+
+    options { 
+        disableConcurrentBuilds() 
+    }
+    
+    environment {
+       dockerRepo = ''
+    }
+    
+    parameters {
+        choice(name: 'ExitCode', choices: ["0", "1"], description: 'Please choose the exit code for trivy scan')
+        choice(name: 'BuildType', choices: ['', 'Alpha.', 'Beta.', 'RC.', 'Release'], description: 'Please choose the type of build')
+        string(name: 'BuildNumber', defaultValue: "", description: 'Please provide the build number')
+        string(name: 'GERRIT_REFSPEC', defaultValue: "refs/heads/${env.BRANCH_NAME}" , description: 'gerrit refspec value ')
+        choice(name: 'SKIP_TESTS', choices: ['true' , 'false'], description: 'Please choose if you want to skip tests')
+    }
+    
+    triggers {
+        gerrit customUrl: '', 
+        gerritProjects: 
+        [
+            [
+                branches: 
+                [
+                    [
+                        compareType: 'PLAIN', pattern: "${env.BRANCH_NAME}"
+                    ]
+                ],
+                compareType: 'PLAIN', 
+                disableStrictForbiddenFileVerification: false,
+                pattern: 'product/product-spark'
+            ]
+        ],
+        triggerOnEvents: [changeMerged(), patchsetCreated(), refUpdated(), draftPublished()]
+    }
+
+    stages {
+        
+        stage ('env-setup') {
+            tools {
+               maven "Maven 3.3.3"
+               jdk "JDK 11"
+            }
+            steps {
+                script{
+                    if(env.GERRIT_EVENT_TYPE){
+                        if("${GERRIT_EVENT_TYPE}"== "ref-updated" && ("${BRANCH_NAME}"!="develop" && "${BRANCH_NAME}"!="master")){
+                            currentBuild.result = 'ABORTED'
+                            error("Duplicate build due to code merge!")
+                        }
+                    }
+                    env.GERRIT_URL = scm.userRemoteConfigs[0].url
+                    env.artifact = readMavenPom().getArtifactId()
+                    env.revision = readMavenPom().properties['revision']
+                    if(BuildNumber.isEmpty())
+                    {
+                        if("${BRANCH_NAME}"!="develop")
+                        {
+                            BuildNumber = "${BRANCH_NAME}"
+                        }
+                        else
+                        {
+                            BuildNumber = "${env.BUILD_NUMBER.toInteger()}"
+                        }
+                    }
+                    if(BuildType == 'Release')
+                    {
+                        if("${BRANCH_NAME}"!="develop" && "${BRANCH_NAME}"!="master")
+                        {
+                            currentBuild.result = 'ABORTED'
+                            error("Feature branch cannot be used for releases!")
+                        }
+                        BuildNumber = "${env.revision}"
+                        BuildType = ""
+                        env.version = "${env.revision}"
+                        env.change = ""
+                        steps.buildName("${env.revision}")
+                    }
+                    else
+                    {
+                        env.version = "${env.revision}-${BuildType}${BuildNumber}"
+                        steps.buildName("${env.revision}-${env.BUILD_NUMBER.toInteger()}")
+                        env.change = "-${BuildType}${BuildNumber}"
+                    }                
+                }
+
+                checkout(
+                [
+                    $class: 'GitSCM',
+                    branches: [[name: "${env.BRANCH_NAME}"]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'WipeWorkspace'],
+                    [
+                        $class: 'BuildChooserSetting', buildChooser: [$class: 'GerritTriggerBuildChooser']
+                    ], 
+                    [
+                        $class: 'LocalBranch', localBranch: "${env.BRANCH_NAME}"]
+                    ],
+                    submoduleCfg: [], 
+                    userRemoteConfigs: [
+                        [
+                            credentialsId: '4db7e02d-3ed8-4ae3-b61a-2a28109c828b', refspec: '$GERRIT_REFSPEC', url: "${env.GERRIT_URL}"]
+                        ]
+                ]
+                )     
+
+                withCredentials([usernamePassword(credentialsId: 'artifactoryServer', passwordVariable: 'password', usernameVariable: 'username')]) 
+                {
+                    rtServer (
+                        id: "ARTIFACTORY_SERVER",
+                        url: "http://artifactory:8081/artifactory",
+                        username: "$username",
+                        password: "$password"
+                    )
+                    rtMavenRun(
+                        tool: "Maven 3.3.3",
+                        pom: '$WORKSPACE/pom.xml',
+                        goals: "versions:set  -N versions:update-child-modules -DgenerateBackupPoms=false -DnewVersion=${env.version}",
+                        buildName: "${env.artifact}-${env.revision}",
+                        buildNumber: "${BuildType}${BuildNumber}"
+                    )
+                    rtMavenResolver(
+                        id: "MAVEN_RESOLVER",
+                        serverId: "ARTIFACTORY_SERVER",
+                        releaseRepo: "libs-release",
+                        snapshotRepo: "libs-snapshot"
+                    )
+
+                    rtMavenDeployer(
+                        id: "MAVEN_DEPLOYER",
+                        serverId: "ARTIFACTORY_SERVER",
+                        releaseRepo: "libs-release-local",
+                        snapshotRepo: "libs-snapshot-local"
+                    )
+                }
+            }
+        }
+
+        stage ('Build & Test') {
+            tools {
+                maven "Maven 3.3.3"
+                jdk "JDK 11"
+            }
+            steps {
+                script{
+                    env.PUBLISH_ARTIFACTS = "true"
+                    env.PUBLISH_BUILDINFO = "true"
+                    if(env.GERRIT_EVENT_TYPE){
+                        if("${GERRIT_EVENT_TYPE}"!= "change-merged"){
+                            env.PUBLISH_ARTIFACTS = "false"
+                            env.PUBLISH_BUILDINFO = "false"
+                        }
+                    }
+                    if("${BRANCH_NAME}"!="develop" && "${env.PUBLISH_ARTIFACTS}" == "true")
+                    {
+                        try {
+                            timeout(time:420, unit:'SECONDS') {
+                                env.FEATURE_DEPLOY = input message: 'User input required',
+                                parameters: [choice(name: 'Deploy Feature branch artifacts?', choices: 'No\nYes', description: 'Choose "yes" if you want to deploy Feature branch artifacts')]
+                                BuildNumber = "${BRANCH_NAME}"
+                                BuildType = ""
+                            }
+                        } catch(err) {
+                                echo ("Input timeout expired, Setting default value as No")
+                                env.FEATURE_DEPLOY="No"
+                            }
+                    }
+                    if("${env.FEATURE_DEPLOY}"=="No")
+                    {
+                        env.PUBLISH_ARTIFACTS = "false"
+                        env.PUBLISH_BUILDINFO = "false"
+                    }
+                }
+                script{
+                    if (env.PUBLISH_ARTIFACTS == "true"){
+                        rtMavenRun(
+                            tool: "Maven 3.3.3",
+                            pom: '$WORKSPACE/pom.xml',
+                            goals: "clean install package -U -P generateDocker -Dchangelist=${env.change} -DskipTests=${SKIP_TESTS} -Dartifactory.publish.artifacts=${env.PUBLISH_ARTIFACTS} -Dmaven.test.skip=true -Dartifactory.publish.buildInfo=${env.PUBLISH_BUILDINFO}",
+                            resolverId: "MAVEN_RESOLVER",
+                            deployerId: "MAVEN_DEPLOYER",
+                            buildName: "${env.artifact}-${env.revision}",
+                            buildNumber: "${BuildType}${BuildNumber}"
+                        )
+                    }
+                    else
+                    {
+                        rtMavenRun(
+                            tool: "Maven 3.3.3",
+                            pom: '$WORKSPACE/pom.xml',
+                            goals: "clean install package -U -Dchangelist=${env.change} -DskipTests=${SKIP_TESTS} -Dartifactory.publish.artifacts=${env.PUBLISH_ARTIFACTS} -Dmaven.test.skip=true -Dartifactory.publish.buildInfo=${env.PUBLISH_BUILDINFO}",
+                            resolverId: "MAVEN_RESOLVER",
+                            deployerId: "MAVEN_DEPLOYER",
+                            buildName: "${env.artifact}-${env.revision}",
+                            buildNumber: "${BuildType}${BuildNumber}"
+                        )
+                    }
+                }
+            }
+            post {
+                always {
+                        step([$class: 'JUnitResultArchiver'
+                        ,testResults : '**/target/surefire-reports/TEST-*.xml',
+                       allowEmptyResults: true
+                ])}
+            }
+        }
+
+        stage('SonarQube analysis') {
+
+            tools {
+                maven "Maven 3.3.3"
+                jdk "JDK 11"
+            }
+            steps {
+                withSonarQubeEnv('Sonarqube') {
+                    rtMavenRun(
+                        tool: "Maven 3.3.3",
+                        pom: '$WORKSPACE/pom.xml',                                       
+                        goals: 'sonar:sonar -Dmaven.repo.local=$WORKSPACE/.repository',
+                    )
+                }
+            }
+        }
+
+        stage ('Publish Helm Artifacts') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {        
+                rtDockerPush(
+                    serverId: "ARTIFACTORY_SERVER",
+                    image: "$dockerRepo" + "/${env.artifact}:${env.version}",
+                    targetRepo: 'sigma_insights/',
+                    buildName: "${env.artifact}-${env.revision}",
+                    buildNumber: "${BuildType}${BuildNumber}"
+                )
+                withCredentials([usernamePassword(credentialsId: 'artifactoryServer', passwordVariable: 'password', usernameVariable: 'username')]) {    
+                    rtUpload (
+                        serverId: "ARTIFACTORY_SERVER",
+                        spec:
+                            """{
+                            "files": [
+                                {
+                                    "pattern": "*.tgz",
+                                    "target": "helm-repo-local/product/"
+                                }
+                            ]
+                            }""",
+                        failNoOp: true,
+                        buildName: "${env.artifact}-${env.revision}",
+                        buildNumber: "${BuildType}${BuildNumber}"
+                    )
+                    script{
+                        sh"""
+                            curl -u$username:$password -XPOST http://artifactory:8081/artifactory/api/helm/helm-repo-local/reindex
+                            docker rmi -f "$dockerRepo/${env.artifact}:${env.version}"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Vulnerability Scan') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {
+                script{
+                    env.value = sh(script:"set +e; docker run -v /var/run/docker.sock:/var/run/docker.sock  --name ${env.artifact}-${env.version} docker.io/aquasec/trivy:0.22.0 image --format template --template \"@contrib/html.tpl\" -o /tmp/${env.version}.html --exit-code ${ExitCode} --severity HIGH,CRITICAL ${dockerRepo}/${env.artifact}:${env.version} ; export value=\$? ; docker cp ${env.artifact}-${env.version}:/tmp/${env.version}.html /data/users/trivy-scan/${env.artifact}/ ; docker container rm -f ${env.artifact}-${env.version} ; exit \$value ",returnStdout:true) 
+                }
+            }
+            post {
+                always {
+                    publishHTML (target : [allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    includes: '**/*.html',
+                    reportDir: "/data/users/trivy-scan/${env.artifact}",
+                    reportFiles: "${env.version}.html",
+                    reportName: "Vulnerability Scan Report",
+                    reportTitles: "Trivy Scan Vulnerability Report"])
+                }
+            }
+        }
+
+        stage ('Publish Build Info') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {
+                rtPublishBuildInfo (
+                    serverId: "ARTIFACTORY_SERVER",
+                    buildName: "${env.artifact}-${env.revision}",
+                    buildNumber: "${BuildType}${BuildNumber}"
+                )
+            }
+        }
+    }
+    post {
+        failure {
+            script {
+                env.GIT_COMMIT_MSG = sh (script: 'git log -1 --pretty=%B ${GIT_COMMIT}', returnStdout: true).trim()
+                env.OWNER = sh (script: 'git show -s --pretty=%an', returnStdout: true).trim() 
+            }
+            emailext body: "${currentBuild.currentResult}: Job <br/> ${env.JOB_NAME} build ${BuildType}${BuildNumber} <br/> Commit owner: ${env.OWNER} <br/> Commit message: ${env.GIT_COMMIT_MSG} <br/> More info at: ${env.BUILD_URL}",
+            mimeType: 'text/html',
+            recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'CulpritsRecipientProvider'], [$class: 'RequesterRecipientProvider']], to: '$DEFAULT_RECIPIENTS',
+            subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+        }
+        success{
+            script{
+            if("${BRANCH_NAME}"=="develop"){
+            def changelogString = gitChangelog from: [type: 'COMMIT', value: "${env.GIT_PREVIOUS_COMMIT}"], returnType: 'STRING', to: [type: 'COMMIT', value: "${env.GIT_COMMIT}"], template: 
+"""{{#tags}}
+<h1><a href="http://JENKINS_SERVER:8081/job/${env.artifact}/job/${BRANCH_NAME}/${BuildType}${BuildNumber}/console">${env.version}: </a><a href="http://artifactory:8081/artifactory/webapp/#/builds/${env.artifact}-${env.revision}/${BuildType}${BuildNumber}">${env.artifact}</a><h3>Build time: $BUILD_TIMESTAMP</h3></h1>
+{{#issues}}
+  {{#commits}}
+<ul>
+<li><h3>{{{messageTitle}}}</h3></li>
+{{#messageBodyItems}}
+<li><h3> {{.}} </h3></li>
+{{/messageBodyItems}}
+</ul>
+  {{/commits}}
+ {{/issues}}
+{{/tags}}"""
+                echo "$changelogString"
+				try{
+					publishConfluence attachArchivedArtifacts: true, editorList: [confluencePrependPage(confluenceText("$changelogString"))], labels: 'Changelog, Builds', pageName: 'Changelog', parentId: 0000000000, siteName: 'technologies.atlassian.net', spaceName: 'ENG'
+                } catch (Exception e) {
+                    echo 'Exception occurred: ' + e.toString()
+				}
+                try{
+                    transitionNames = ['Review', 'Dev Complete', 'Integration']
+                    env.idOrKey = sh (script: 'git log -1 --pretty=%B ${GIT_COMMIT} | cut -d \':\' -f1', returnStdout: true).trim()
+                    transitionNames.each{
+                        transitions = jiraGetIssueTransitions idOrKey: "${env.idOrKey}", site: 'JIRA'
+                        transitionId=''
+                        output = groovy.json.JsonOutput.toJson(transitions.data.transitions)
+                        list = new groovy.json.JsonSlurperClassic().parseText(output)
+                        transitionName=it
+                        list.find{                            
+                            if (it.name==transitionName){
+                                transitionId=it.id
+                                return true
+                            }
+                        }
+    
+                        def transitionInput =
+                            [
+                                transition: [
+                                    id: transitionId
+                                ]
+                            ]
+                        transitions = jiraTransitionIssue idOrKey: "${env.idOrKey}", site: 'JIRA', input: transitionInput                
+                    }
+                } catch (Exception e) {
+                    echo 'Exception occurred: ' + e.toString()
+				}
+            }
+            }
+        }
+    }
+}

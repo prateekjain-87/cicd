@@ -1,0 +1,307 @@
+pipeline{
+    agent any
+
+    options { 
+        disableConcurrentBuilds() 
+    }
+    
+    environment {
+       dockerRepo = ''
+    }
+
+    parameters {
+        choice(name: 'ExitCode', choices: ["0", "1"], description: 'Please choose the exit code for trivy scan')
+        choice(name: 'BuildType', choices: ['SNAPSHOT', '', 'Alpha', 'Beta', 'RC', 'Release'], description: 'Please choose the type of build')
+        string(name: 'BuildNumber', defaultValue: "", description: 'Please provide the build number')
+        string(name: 'GERRIT_REFSPEC', defaultValue: "refs/heads/${env.BRANCH_NAME}" , description: 'gerrit refspec value ')
+        choice(name: 'SKIP_TESTS', choices: ['false' , 'true'], description: 'Please choose if you want to skip tests')
+    }
+
+    triggers {
+        gerrit customUrl: '', 
+        gerritProjects: 
+        [
+            [
+                branches: 
+                [
+                    [
+                        compareType: 'PLAIN', pattern: "${env.BRANCH_NAME}"
+                    ]
+                ],
+                compareType: 'PLAIN', 
+                disableStrictForbiddenFileVerification: false,
+                pattern: 'product/product-core'
+            ]
+        ],
+        triggerOnEvents: [refUpdated(), changeMerged(), patchsetCreated(), draftPublished()]
+    }
+
+    stages {
+        stage ('env-setup') {
+            tools {
+               maven "Maven 3.3.9"
+               jdk "JDK 11"
+            }
+            steps {
+                script{
+                    if(env.GERRIT_EVENT_TYPE){
+                        if("${GERRIT_EVENT_TYPE}"== "ref-updated" && ("${BRANCH_NAME}"!="develop" && "${BRANCH_NAME}"!="master")){
+                            echo "Duplicate build due to code merge!"
+                            currentBuild.result = 'ABORTED'
+                            return
+                        }
+                    }
+                    env.GERRIT_URL = scm.userRemoteConfigs[0].url
+                }
+
+                deleteDir()
+
+                checkout(
+                [
+                    $class: 'GitSCM',
+                    branches: [[name: "${env.BRANCH_NAME}"]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'WipeWorkspace'],
+                    [
+                        $class: 'BuildChooserSetting', buildChooser: [$class: 'GerritTriggerBuildChooser']
+                    ], 
+                    [
+                        $class: 'LocalBranch', localBranch: "${env.BRANCH_NAME}"]
+                    ],
+                    submoduleCfg: [], 
+                    userRemoteConfigs: [
+                        [
+                            credentialsId: '', refspec: '$GERRIT_REFSPEC', url: "${env.GERRIT_URL}"]
+                        ]
+                ]
+                )     
+
+                withCredentials([usernamePassword(credentialsId: 'artifactoryServer', passwordVariable: 'password', usernameVariable: 'username')]) 
+                {
+                    rtServer (
+                        id: "ARTIFACTORY_SERVER",
+                        url: "http://artifactory:8081/artifactory",
+                        username: "$username",
+                        password: "$password"
+                    )
+                    rtMavenResolver(
+                        id: "MAVEN_RESOLVER",
+                        serverId: "ARTIFACTORY_SERVER",
+                        releaseRepo: "libs-release",
+                        snapshotRepo: "libs-snapshot"
+                    )
+
+                    rtMavenDeployer(
+                        id: "MAVEN_DEPLOYER",
+                        serverId: "ARTIFACTORY_SERVER",
+                        releaseRepo: "libs-release-local",
+                        snapshotRepo: "libs-snapshot-local"
+                    )
+                }
+            }
+        }
+			
+        stage ('Build & Test') {
+            tools {
+                maven "Maven 3.3.9"
+                jdk"JDK 11"
+            }
+            steps {
+                script{
+                    env.artifact = sh(script:"mvn exec:exec -Dexec.executable=\'echo\' -Dexec.args=\'\${project.artifactId}\' --non-recursive -q",returnStdout:true).replaceAll("\\s+","")
+                    env.revision = sh(script:"mvn exec:exec -Dexec.executable=\'echo\' -Dexec.args=\'\${project.version}\' --non-recursive -q | awk -F \"-\" \'{print \$1}\'",returnStdout:true).replaceAll("\\s+","")
+                    if(BuildNumber.isEmpty())
+                    {
+                        BuildNumber = "${env.BUILD_NUMBER.toInteger()}"
+                    }
+                    if("${BRANCH_NAME}"=="develop" || "${BRANCH_NAME}"=="master")
+                    {
+                        BuildType = ""
+                    }
+                    if("${BRANCH_NAME}"!="develop" && "${BRANCH_NAME}"!="master")
+                    {
+                        BuildNumber = ""
+                    }
+                    if(BuildType == 'Release')
+                    {
+                        if("${BRANCH_NAME}"!="develop" && "${BRANCH_NAME}"!="master")
+                        {
+                            currentBuild.result = 'ABORTED'
+                            error("Feature branch cannot be used for releases!")
+                        }
+                        BuildNumber = "${env.revision}"
+                        BuildType = ""
+                        env.version = "${env.revision}"
+                        env.change = ""
+                        steps.buildName("${env.revision}")
+                    }
+                    else
+                    {
+                        env.version = "${env.revision}-${BuildType}${BuildNumber}"
+                        steps.buildName("${env.revision}-${BuildType}${BuildNumber}")
+                        env.change = "-${BuildType}${BuildNumber}"
+                    }
+                    rtMavenRun(
+                        tool: "Maven 3.3.9",
+                        pom: '$WORKSPACE/pom.xml',
+                        goals: "versions:set  -N versions:update-child-modules -DgenerateBackupPoms=false -DnewVersion=${env.version}",
+                        buildName: "${env.artifact}-${env.revision}",
+                        buildNumber: "${BuildType}${BuildNumber}"
+                    )
+                    env.PUBLISH_ARTIFACTS = "true"
+                    env.PUBLISH_BUILDINFO = "true"
+                    if(env.GERRIT_EVENT_TYPE){
+                        if("${GERRIT_EVENT_TYPE}"!= "change-merged"){
+                            env.PUBLISH_ARTIFACTS = "false"
+                            env.PUBLISH_BUILDINFO = "false"
+                        }
+                    }
+                    if("${BRANCH_NAME}"!="develop" && "${env.PUBLISH_ARTIFACTS}" == "true")
+                    {
+                        env.PUBLISH_ARTIFACTS = "false"
+                        env.PUBLISH_BUILDINFO = "false"
+                    }
+
+                    if (env.PUBLISH_ARTIFACTS == "true"){
+                        rtMavenRun(
+                            tool: "Maven 3.3.9", //ToolnamefromJenkinsconfiguration
+                            pom: '$WORKSPACE/pom.xml',
+                            goals: "clean compile source:jar resources:testResources package install -P generateDocker -Dchangelist=${env.change} -DskipTests=${SKIP_TESTS} -Dartifactory.publish.artifacts=${env.PUBLISH_ARTIFACTS} -Dartifactory.publish.buildInfo=${env.PUBLISH_BUILDINFO}",
+                            deployerId: "MAVEN_DEPLOYER",
+                            resolverId: "MAVEN_RESOLVER",
+                            buildName: "${env.artifact}-${env.revision}",
+                            buildNumber: "${BuildType}${BuildNumber}"
+                        )
+                    }
+                    else
+                    {
+                        rtMavenRun(
+                            tool: "Maven 3.3.9",
+                            pom: '$WORKSPACE/pom.xml',
+                            goals: "clean compile source:jar resources:testResources package install -Dchangelist=${env.change} -DskipTests=${SKIP_TESTS} -Dartifactory.publish.artifacts=${env.PUBLISH_ARTIFACTS} -Dartifactory.publish.buildInfo=${env.PUBLISH_BUILDINFO}",
+                            resolverId: "MAVEN_RESOLVER",
+                            deployerId: "MAVEN_DEPLOYER",
+                            buildName: "${env.artifact}-${env.revision}",
+                            buildNumber: "${BuildType}${BuildNumber}"
+                        )
+                    }
+                }
+            }
+            post {
+                always {
+                        step([$class: 'JUnitResultArchiver'
+                        ,testResults : '**/target/surefire-reports/TEST-*.xml',
+                       allowEmptyResults: true
+                ])}
+            }
+        }
+
+        stage('SonarQube analysis') {
+
+            tools {
+                maven "Maven 3.3.9"
+                jdk "JDK 11"
+            }
+            steps {
+                withSonarQubeEnv('Product-SonarQube') {
+                    rtMavenRun(
+                        tool: "Maven 3.3.9",
+                        pom: '$WORKSPACE/pom.xml',                                       
+                        goals: 'sonar:sonar -Dmaven.repo.local=$WORKSPACE/.repository',
+                    )
+                }
+            }
+        }
+
+        stage ('Generate License') {
+            tools {
+                maven "Maven 3.3.9"
+                jdk"JDK 11"
+            }
+            steps {
+                rtMavenRun(
+                        tool: "Maven 3.3.9", //ToolnamefromJenkinsconfiguration
+                        pom: '$WORKSPACE/pom.xml',
+                        goals: '-U license:aggregate-add-third-party -Dlicense.excludedGroups=com.org'
+                )
+                script{
+                    sh label: '', script: '''cd $WORKSPACE
+                    #sed  -i \'1i (DHTMLx TreeGrid License) DHTMLx TreeGrid (http://dhtmlx.com/docs/products/dhtmlxTreeGrid/)\' target/generated-sources/license/THIRD-PARTY.txt
+
+                    sed  -i \'1i------------------------------------\\nThird Party Software : License Type\\n------------------------------------\\nBasic Primitives   :  OEM \\nDHTMLXTreeGrid :   Enterprise\\n------------------------------------\\nOpen Source Libraries\\n------------------------------------\\nbpmn-js :  MIT\\n------------------------------------\' target/generated-sources/license/THIRD-PARTY.txt
+
+                    '''
+                }
+            }
+        }
+
+        stage ('Publish Artifacts') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {        
+                withCredentials([usernamePassword(credentialsId: 'artifactoryServer', passwordVariable: 'password', usernameVariable: 'username')]) {    
+                    rtUpload (
+                        serverId: "ARTIFACTORY_SERVER",
+                        spec:
+                            """{
+                            "files": [
+                                {
+                                    "pattern": "*.tgz",
+                                    "target": "helm-repo-local/product/"
+                                }
+                            ]
+                            }""",
+                        failNoOp: true,
+                        buildName: "${env.artifact}-${env.revision}",
+                        buildNumber: "${BuildType}${BuildNumber}"
+                    )
+                    script{
+                        sh"""
+                            curl -u$username:$password -XPOST http://artifactory:8081/artifactory/api/helm/helm-repo-local/reindex
+                            docker push $dockerRepo/${env.artifact}:${env.version}
+                            docker rmi -f $dockerRepo/${env.artifact}:${env.version}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Vulnerability Scan') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {
+                script{
+                    env.value = sh(script:"set +e; docker run -v /var/run/docker.sock:/var/run/docker.sock  --name ${env.artifact}-${env.version} docker.io/aquasec/trivy:0.22.0 image --format template --template \"@contrib/html.tpl\" -o /tmp/${env.version}.html --exit-code ${ExitCode} --severity HIGH,CRITICAL ${dockerRepo}/${env.artifact}:${env.version} ; export value=\$? ; docker cp ${env.artifact}-${env.version}:/tmp/${env.version}.html /data/users/psjenkin/trivy-scan/${env.artifact}/ ; docker container rm -f ${env.artifact}-${env.version} ; exit \$value ",returnStdout:true) 
+                }
+            }
+            post {
+                always {
+                    publishHTML (target : [allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    includes: '**/*.html',
+                    reportDir: "/data/users/psjenkin/trivy-scan/${env.artifact}/",
+                    reportFiles: "${env.version}.html",
+                    reportName: "Vulnerability Scan Report",
+                    reportTitles: "Trivy Scan Vulnerability Report"])
+                }
+            }
+        }
+
+
+        stage ('Publish BuildInfo') {
+            when {
+                expression { env.PUBLISH_ARTIFACTS == "true" }
+            }
+            steps {
+                rtPublishBuildInfo (
+                    serverId: "ARTIFACTORY_SERVER",
+                    buildName: "${env.artifact}-${env.revision}",
+                    buildNumber: "${BuildType}${BuildNumber}"
+                )
+            }
+        }
+    }
+}

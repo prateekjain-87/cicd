@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+data:
+  application.properties: |
+
+    server.port=9000
+    server.servlet.context-path=/orderservice
+    server.error.include-message=always
+    spring.profiles.active=DEV
+
+    spring.datasource.url={{ required "spring.datasourceUrl is required" .Values.spring.datasourceUrl }}?currentSchema={{required "spring.liquibase.defaultSchema is required" .Values.spring.liquibase.defaultSchema }}
+    spring.datasource.username=${SPRING_DATASOURCE_USERNAME}
+    spring.datasource.password=${SPRING_DATASOURCE_PASSWORD}
+    spring.datasource.driver-class-name=org.postgresql.Driver
+    spring.sql.init.mode=always
+
+
+    spring.kafka.properties.schema-registry-url={{ required "schema.schemaRegistryUrl is required" .Values.schema.schemaRegistryUrl }}
+
+    {{ .Values.spring.kafka.producer | default "" | nindent 4 }}
+
+    product.naming.prefix={{- include "product.namingPrefix" . }}
+
+metadata:
+  name: {{ include "product.fullname" . }}-application-config
+  namespace: {{ .Release.Namespace }}

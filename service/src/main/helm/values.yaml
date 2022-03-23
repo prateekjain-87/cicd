@@ -1,0 +1,188 @@
+replicaCount: 1
+
+image:
+  name: ${docker.namespace}/${project.artifactId}
+  tag: ${item}
+  init: ${docker.namespace}
+  inittag: 0.0.1-SNAPSHOT
+
+global:
+  image:
+    registry: ${docker.registry}
+    pullPolicy: Always
+    initpullPolicy: Always
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: false
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: ""
+  prometheus.io/port: ""
+  prometheus.io/path: ""
+  sidecar.jaegertracing.io/inject: "true"
+
+podSecurityContext: {}
+# fsGroup: 2000
+
+securityContext:
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+
+envCfg:
+  releaseName: ""
+  releaseVersion: ""
+  envVals: |-
+
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu:
+    memory:
+  requests:
+    cpu:
+    memory:
+
+targetPort:
+
+autoscaling:
+  enabled: false
+  minReplicas: 
+  maxReplicas: 
+  targetCPUUtilizationPercentage: 
+  targetMemoryUtilizationPercentage:
+
+#deploymentStrategy:
+ # type: RollingUpdate
+
+#nodeSelector: {}
+
+#tolerations: []
+
+#affinity: {}
+
+ssl:
+  keystore:
+    filepath:
+    type:
+  truststore:
+    filepath:
+    type:
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: 9000
+  initialDelaySeconds: 1
+  periodSeconds: 30
+
+startupProbe:
+  httpGet:
+    path: /
+    port: 9000
+  periodSeconds: 5
+  failureThreshold: 60
+
+
+spring:
+  datasourceUrl: jdbc:postgresql://aurora-cluster-tf.cluster-name.eu-west-1.rds.amazonaws.com:5432/datasource
+
+kafka:
+  bootstrapServers: b-2.name.kafka.eu-west-1.amazonaws.com:9094,b-1.name.kafka.eu-west-1.amazonaws.com:9094
+  persistMessageToDB: true
+  topic:
+    default:
+      consumers: 3
+      partitions: 3
+      replication_factor: 1
+      retry_count: 3
+      retry_delay: 10000
+
+jaegerAgent:
+  port: 6831
+  # Optional, use it in case of jaeger install as sidecar
+  #host: localhost
+jaeger:
+  enable: "false"
+  header: trace-id
+  sampler:
+    type: const
+    param: 1
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+logback:
+  logger:
+    - name:
+      loglevel:
+
+elasticsearch:
+  enable: true #example: true/false
+  sslEnabled: true
+  uri: vpc-name.eu-west-1.es.amazonaws.com:443
+  enableCredential: false
+  username: dummy
+  password: ${elasticsearch_password_base64}
+  clusterName:
+  entitySpec:
+    createDoc: false
+
+#Properties for Authentication
+oidc:
+  authenticationEnabled: true
+  accessTokenKey: X-Amzn-Oidc-Accesstoken
+  idTokenKey: id_token
+  userclaimsTokenKey: X-Amzn-Oidc-Data
+  clientCredentialsValidScopePrefix:
+  usernameClaimKey: username
+  scopeClaimKey: scope
+  roleClaimKey: cognito:groups
+  nameClaimKey: name
+  fullNameClaimKey: name
+  validateIssuer: true
+  validateOpenidScope: false
+  clientCredGroupMapperPath: ""
+  authGroupMapperPath: ""
+  functionName: mapUserinfoToGroupNames
+  clientCredGroupMapperContent:
+  authGroupMapperContent:
+  httpConnectTimeout:
+  httpReadTimeout:
+  httpReadSizeLimit:
+  jwsAlgorithm:
+  jweAlgorithm:
+  jweEncryptionEnc:
+  jwkSetUri: https://cognito-idp.region.amazonaws.com/eu-west-1_name/.well-known/jwks.json
+  jwtIssuerUri: https://cognito-idp.region.amazonaws.com/eu-west-1_name
+
+authorization:
+  enabled: true
+
+secrets:
+  name: secrets
+  userkey: username
+  passwordkey: password
+  truststorepassword: truststorepass
+  keystorepassword: keystorepass
+  sslname: ssl-keystore-cert
+
+java:
+  javaOpts: "-Xmx1600m -Xms1000m -XX:NewSize=512m -XX:MaxNewSize=512m -Xss4m"

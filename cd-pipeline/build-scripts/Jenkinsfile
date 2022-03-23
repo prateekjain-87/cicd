@@ -1,0 +1,182 @@
+pipeline{
+    agent any
+    environment {
+        artifactoryRepo = ""
+        awsRepo = ""
+        region = ""
+        productChartsRepoUrl = "s3://helm-charts/service_name"
+        AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+    }
+    parameters {
+        string(name: 'serviceVersion', defaultValue: "", description: 'Please provide the service Version')
+    }
+
+    stages {
+
+        stage ('env-setup') {
+            steps {
+
+                checkout(
+                [
+                    $class: 'GitSCM',
+                    branches: [[name: "${env.BRANCH_NAME}"]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'WipeWorkspace'],
+                    [
+                        $class: 'BuildChooserSetting', buildChooser: [$class: 'GerritTriggerBuildChooser']
+                    ], 
+                    [
+                        $class: 'LocalBranch', localBranch: "${env.BRANCH_NAME}"]
+                    ],
+                    submoduleCfg: [], 
+                    userRemoteConfigs: [
+                        [
+                            credentialsId: '', refspec: "refs/heads/${env.BRANCH_NAME}", url: ""]
+                        ]
+                ]
+                )
+                
+            }
+        }
+
+        stage ('Pull Artifacts') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'artifactoryServer', passwordVariable: 'password', usernameVariable: 'username')]) 
+                {
+                    rtServer (
+                        id: "ARTIFACTORY_SERVER",
+                        url: "http://ARTIFACTORY_URL:8081/artifactory",
+                        username: "$username",
+                        password: "$password"
+                    )
+                }
+                script{
+                    env.serviceArtifact = ""
+                    env.serviceRevision = ""
+                }
+                rtDockerPull(
+                    serverId: "ARTIFACTORY_SERVER",
+                    image: "$artifactoryRepo" + "/${env.serviceArtifact}:${serviceVersion}",
+                    sourceRepo: 'product/',
+                    buildName: "${env.serviceArtifact}-${env.serviceRevision}",
+                    buildNumber: "${serviceVersion}"
+                )
+                rtDownload (
+                    serverId: "ARTIFACTORY_SERVER",
+                    spec: """{
+                        "files": [
+                            {
+                                "pattern": "helm-repo-local/product/${env.serviceArtifact}-${serviceVersion}.tgz",         
+                                "target": "target/"
+                            }
+                        ]
+                    }""",
+                    failNoOp: true,
+                    buildName: "${env.serviceArtifact}-${env.serviceRevision}",
+                    buildNumber: "${serviceVersion}"
+                )
+            }
+        }
+        
+        stage('Push Artifacts to AWS'){
+            steps{
+                sh"""
+                    docker tag $artifactoryRepo/${env.serviceArtifact}:${serviceVersion} $awsRepo/product/${env.serviceArtifact}:${serviceVersion}
+                    docker login -u AWS -p \$(aws ecr get-login-password --region $region) $awsRepo
+                    docker push $awsRepo/product/${env.serviceArtifact}:${serviceVersion}
+                    helm repo add product-charts ${env.productChartsRepoUrl} --force-update
+                    helm repo update
+                    aws s3 cp target/product/${env.serviceArtifact}-${serviceVersion}.tgz ${env.productChartsRepoUrl}/
+                    helm s3 reindex product-charts
+                """
+            }
+        }
+
+        stage('Deploy the artifacts to Dev Cluster'){
+            stages{
+                stage ('Deploy the Utilities')
+                {
+                    steps{
+                        sshagent (credentials: ['HostKey']) {
+                            sh'''
+                                #!/bin/bash
+                                set -a
+                                . $WORKSPACE/build-scripts/env.properties
+                                set +a
+                                ssh -o StrictHostKeyChecking=no -tt ec2-user@IP<< EOF
+                                export KUBECONFIG=/home/ec2-user/cluster-configs/kubeconfig_product-spark-cluster
+                                helm repo add product-charts ${productChartsRepoUrl} --force-update
+                                helm repo update
+                                helm upgrade ${serviceArtifact} product-charts/${serviceArtifact} --install --version ${serviceVersion} --namespace ${namespace} --set image.repository=$awsRepo/product/${serviceArtifact} --set image.tag=${serviceVersion} --set replicaCount=${replicaCount}
+                                exit
+                                EOF
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Decide deployment on QA Env') {
+            agent none
+            steps {
+                script {
+                    env.DEPLOY_ON_QA_ENV = input message: 'User input required',
+                    parameters: [choice(name: 'Deploy on QA Environment', choices: 'No\nYes', description: 'Choose "yes" if you want to deploy on QA Env')]
+                }
+          }
+        }
+        stage('Deploy the artifacts to QA Cluster') {
+            when {
+                environment name: 'DEPLOY_ON_QA_ENV', value: 'Yes'
+            }
+            stages{
+                stage('Deploy the PI'){
+                    steps{
+                        sshagent (credentials: ['HostKey']) {
+                        sh '''
+                            #!/bin/bash
+                            set -a
+                            . $WORKSPACE/build-scripts/env.properties
+                            set +a
+                            ssh -o StrictHostKeyChecking=no -tt ec2-user@IP<< EOF 
+                            export KUBECONFIG=/home/ec2-user/cluster-configs/kubeconfig_product-spark-cluster
+                            helm repo add product-charts ${productChartsRepoUrl} --force-update
+                            helm repo update
+                            helm upgrade ${serviceArtifact} product-charts/${serviceArtifact} --install --version ${serviceVersion} --namespace ${namespace} --set image.repository=${imageRepository} --set image.tag=${serviceVersion} --set replicaCount=${replicaCount}
+                            exit
+                            EOF
+                        '''
+                        }
+                    }
+                }
+            }
+        }
+        stage ('Jemter Performance testing') {
+            when {
+                environment name: 'DEPLOY_ON_QA_ENV', value: 'Yes'
+            }
+            steps {
+                sshagent (credentials: ['HostKey']) {
+                sh '''
+                    #!/bin/bash
+                    set -a
+                    . $WORKSPACE/build-scripts/env.properties
+                    set +a
+                    ssh -o StrictHostKeyChecking=no -tt ec2-user@IP<< EOF 
+                    export KUBECONFIG=/home/ec2-user/cluster-configs/kubeconfig_product-spark-cluster
+                    /home/ec2-user/product/jmeter/bin/jmeter -Jjmeter.save.saveservice.output_format=xml -n -t /home/ec2-user/product/jmeter/bin/jmeter.jmx -l /home/ec2-user/product/jmeter/JMeter.jtl
+                    exit
+                    EOF                    
+                '''
+                }
+            }
+            post{
+               success{
+                    perfReport filterRegex: '', showTrendGraphs: true, sourceDataFiles: '/home/ec2-user/product/jmeter/JMeter.jtl'
+                }
+            }
+        }
+    }
+}
