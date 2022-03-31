@@ -1,0 +1,52 @@
+helmDefaults:
+  wait: true
+  timeout: 600
+
+templates:
+  common: &common
+    chart: {{ requiredEnv "REPO_NAME" }}/{{`{{ .Release.Labels.service }}`}}
+    missingFileHandler: Warn
+
+  productValues: &productValues
+    values:
+      - ./values/{{`{{ .Release.Labels.service }}`}}.yaml.gotmpl
+      - ../../{{ requiredEnv "PROJECT_NAME" }}/values/cproductmons/cproductmon.yaml.gotmpl
+      - ../../{{ requiredEnv "PROJECT_NAME" }}/values/tools/tools.yaml.gotmpl
+      - ../../{{ requiredEnv "PROJECT_NAME" }}/values/tools/dockerregistry.yaml.gotmpl
+      - ../../{{ requiredEnv "PROJECT_NAME" }}/values/profile/{{ requiredEnv "PROFILE" }}/{{`{{ .Release.Labels.service }}`}}.yaml.gotmpl
+      - ../../{{ requiredEnv "PROJECT_NAME" }}/values/override/{{`{{ .Release.Labels.service }}`}}.yaml.gotmpl
+    namespace: {{ requiredEnv "NAMESPACE" }}
+    createNamespace: false
+
+  gitDependencies: &gitDependencies
+    needs:
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "GIT_CONTAINER_SVC" }}
+
+  authDependencies: &authDependencies
+    needs:
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "PRODUCT_SVC" }}
+
+  productDependencies: &productDependencies
+    needs:
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "PRODUCT_SVC" }}
+
+  coreDependencies: &coreDependencies
+    needs:
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "PRODUCT_SVC" }}
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "PRODUCT_SVC" }}
+    - {{ requiredEnv "NAMESPACE" }}/{{ requiredEnv "PRODUCT_SVC" }}
+
+releases:
+
+  {{ if eq (env "PRODUCT_SVC_ENABLED" | default "true") "true" }}
+- name: {{ requiredEnv "PRODUCT_SVC" }}
+  {{ if eq (env "USE_VERSIONS" | default "true") "true" }}
+  version: {{ requiredEnv "product_version" }}
+  {{ end }}
+  labels:
+    service: product-service
+  <<: *cproductmon
+  <<: *productValues
+  <<: *gitDependencies
+  <<: *authDependencies
+  {{ end }}

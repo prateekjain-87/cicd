@@ -1,0 +1,77 @@
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+java:
+  javaOpts: "-Xmx3096m -Xms1024m -XX:NewSize=256m -XX:MaxNewSize=512m -Xss4m"
+
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 500m
+    memory: 3096Mi
+  requests:
+    cpu: 100m
+    memory: 1024Mi
+
+targetPort: 9000
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+livenessProbe:
+  httpGet:
+    path: /api/manage/health
+    port: 9000
+  initialDelaySeconds: 1
+  periodSeconds: 30
+
+startupProbe:
+  httpGet:
+    path: /api/manage/health
+    port: 9000
+  periodSeconds: 5
+  failureThreshold: 60
+
+productSpecifications:
+  local: false
+  prod: true
+  localpath: /home/application/productSpecifications/
+
+logback:
+  logger:
+    - name:
+      loglevel:
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+spring:
+  liquibase:
+    defaultSchema: {{ requiredEnv "SVC_SCHEMA" }}
+  hikari: |-
+      spring.datasource.hikari.maximum-pool-size=3
+      spring.datasource.hikari.minimum-idle=1
+      spring.datasource.hikari.connectionTimeout=60000
+      spring.datasource.hikari.idleTimeout=600000
+      spring.datasource.hikari.maxLifetime=1800000
+
+envCfg:
+  envVals: |-
+    
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9000"
+  prometheus.io/path: "/api/manage/prometheus"
+  sidecar.jaegertracing.io/inject: "true"
