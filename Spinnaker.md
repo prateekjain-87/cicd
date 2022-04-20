@@ -113,3 +113,8 @@ The token can then be stored in a file and passed into following command:
 hal config artifact github account add $ARTIFACT_ACCOUNT_NAME --token-file $TOKEN_FILE
 hal deploy apply
 ```
+
+
+# Example Spinnaker Pipeline configuration for kubernetes yaml deployment in Kubernetes cluster
+
+![alt text](https://github.com/prateekjain-87/cicd/blob/main/Spinnaker.png?raw=true)
