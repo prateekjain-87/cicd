@@ -1,3 +1,6 @@
+
+[Docker command cheatsheet](https://docs.docker.com/get-started/docker_cheatsheet.pdf)
+
 ### ACR
 Reference: [az acr](https://docs.microsoft.com/en-us/cli/azure/acr?view=azure-cli-latest)
 
@@ -76,3 +79,5 @@ Reference: [az acr](https://docs.microsoft.com/en-us/cli/azure/acr?view=azure-cl
     # Queue a local context to validate a build is successful, without pushing to the registry. Removing the -t parameter defaults to --no-push
     az acr build -r MyRegistry .
     ```
+
+[ACR Security Guildlines](https://learn.microsoft.com/en-us/security/benchmark/azure/baselines/container-registry-security-baseline)
