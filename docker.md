@@ -28,6 +28,6 @@ The Docker client can communicate with Docker daemon by using the RESTful API ov
 #### Connection to remote docker host:
 ![alt text](https://github.com/prateekjain-87/cicd/blob/main/remote_docker.png?raw=true)
 
-![alt text](https://github.com/prateekjain-87/cicd/blob/main/container.png?raw=true)
+![alt text](https://github.com/prateekjain-87/cicd/blob/main/iamgeLayer.png?raw=true)
 
 
