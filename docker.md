@@ -1,6 +1,6 @@
 ## Container vs VM
 
-Containers are nothing but OS processes whereas VMs are 
+Containers are nothing but OS processes whereas VMs run complete operating system including the kernel.
 
 Unlike virtual machines where hypervisor divides physical hardware into parts, Containers uses concept of namespaces where each namespace has its own isolated resources without actual partitioning of the underlying hardware. This is the reason why launching a container takes seconds and creating a virtual machine takes minutes.
 
@@ -24,4 +24,10 @@ The Docker client can communicate with Docker daemon by using the RESTful API ov
 •	Docker clients can run on the same system with Docker daemon.
 •	Docker clients connect to a remote Docker daemon.
 
+
+#### Connection to remote docker host:
+![alt text](https://github.com/prateekjain-87/cicd/blob/main/remote_docker.png?raw=true)
+
 ![alt text](https://github.com/prateekjain-87/cicd/blob/main/container.png?raw=true)
+
+
