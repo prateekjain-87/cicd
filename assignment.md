@@ -39,3 +39,12 @@ Here's how Docker uses CGroups:
 
 6. **Container Termination**: When a container is stopped or removed, Docker cleans up the associated CGroup, freeing up the resources that were allocated to the container.
 
+
+
+## Union File System:
+
+When you create a Docker image, it is composed of multiple layers. Each layer represents a filesystem change, such as installing a package or modifying a file. These layers are stacked on top of each other, and the result is a composite view of the filesystem changes.
+
+Copy-on-Write: The Union File System uses a technique called "copy-on-write." This means that when you modify a file in a container, instead of directly modifying the original file, Docker creates a copy of the file and modifies the copy. This ensures that the original layers remain unchanged, making images lightweight and efficient.
+
+
