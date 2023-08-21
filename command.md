@@ -1,5 +1,16 @@
 [Docker command cheatsheet](https://docs.docker.com/get-started/docker_cheatsheet.pdf)
 
+
+Defining multiple docker arguments
+In Dockerfile, we can define multiple build arguments with multiple ARG commands like
+
+ARG VERSION
+ARG PORT
+and in docker build command we have to use multiple — build-arg
+
+docker build -t hello-world:latest --build-arg VERSION=0.2 --build-arg PORT=80 .
+
+
 [Dockerfile Reference](https://docs.docker.com/engine/reference/builder/#entrypoint)
 
 [The Compose file](https://docs.docker.com/compose/compose-file/03-compose-file/)
