@@ -1,5 +1,9 @@
-
 [Docker command cheatsheet](https://docs.docker.com/get-started/docker_cheatsheet.pdf)
+
+[Dockerfile Reference](https://docs.docker.com/engine/reference/builder/#entrypoint)
+
+[The Compose file](https://docs.docker.com/compose/compose-file/03-compose-file/)
+
 
 ### ACR
 Reference: [az acr](https://docs.microsoft.com/en-us/cli/azure/acr?view=azure-cli-latest)
